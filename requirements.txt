@@ -1,0 +1,40 @@
+# Document RAG System - Python Dependencies
+
+# Core Dependencies
+python-dotenv
+requests==2.31.0
+pypdf==4.0.1
+
+# LLM & Embeddings
+anthropic==0.25.1
+tiktoken==0.5.2
+
+# Vector Database
+pinecone-client==3.0.2
+
+# LangGraph
+langgraph==0.0.35
+langchain-core
+typing-extensions==4.9.0
+
+# Data Processing
+numpy==1.26.3
+pandas==2.1.4
+
+# Utilities
+pydantic==2.5.2
+pyyaml==6.0.1
+
+# Testing (optional)
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-asyncio==0.22.1
+
+# Development (optional)
+black==23.12.1
+flake8==6.1.0
+mypy==1.7.1
+pylint==3.0.3
+
+# Logging & Monitoring
+python-json-logger==2.0.7
