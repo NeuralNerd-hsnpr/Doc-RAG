@@ -7,7 +7,7 @@ import logging
 from typing import List, Dict, Tuple, Optional
 import json
 from pinecone import Pinecone, ServerlessSpec
-import anthropic
+from pinecone.exceptions import PineconeApiException
 from config import config
 from src.chunker import Chunk
 
@@ -29,9 +29,6 @@ class PineconeVectorStore:
             self.pc = Pinecone(api_key=config.PINECONE_API_KEY)
             self.index_name = config.PINECONE_INDEX_NAME
             self.dimension = config.PINECONE_DIMENSION
-            self.anthropic_client = anthropic.Anthropic(
-                api_key=config.ANTHROPIC_API_KEY
-            )
             
             logger.info(f"Pinecone client initialized")
             
@@ -45,15 +42,27 @@ class PineconeVectorStore:
     def get_or_create_index(self):
         """Get existing index or create new one"""
         try:
-            # List existing indexes
             existing_indexes = self.pc.list_indexes()
+            index_names = []
             
-            if self.index_name in existing_indexes:
+            if existing_indexes:
+                if isinstance(existing_indexes, list):
+                    if existing_indexes and hasattr(existing_indexes[0], 'name'):
+                        index_names = [idx.name for idx in existing_indexes]
+                    else:
+                        index_names = [str(idx) for idx in existing_indexes]
+                elif hasattr(existing_indexes, '__iter__'):
+                    try:
+                        index_names = [idx.name if hasattr(idx, 'name') else str(idx) for idx in existing_indexes]
+                    except:
+                        index_names = list(existing_indexes) if isinstance(existing_indexes, (list, tuple)) else []
+            
+            if self.index_name in index_names:
                 logger.info(f"Using existing index: {self.index_name}")
                 return self.pc.Index(self.index_name)
             
-            else:
-                logger.info(f"Creating new index: {self.index_name}")
+            logger.info(f"Creating new index: {self.index_name}")
+            try:
                 self.pc.create_index(
                     name=self.index_name,
                     dimension=self.dimension,
@@ -64,28 +73,34 @@ class PineconeVectorStore:
                     )
                 )
                 logger.info(f"Index {self.index_name} created successfully")
-                return self.pc.Index(self.index_name)
+            except PineconeApiException as create_error:
+                error_str = str(create_error)
+                if "ALREADY_EXISTS" in error_str or "409" in error_str or "already exists" in error_str.lower():
+                    logger.info(f"Index {self.index_name} already exists (detected during creation), using it")
+                else:
+                    raise
+            
+            return self.pc.Index(self.index_name)
                 
         except Exception as e:
+            error_str = str(e)
+            if "ALREADY_EXISTS" in error_str or "409" in error_str or "already exists" in error_str.lower():
+                logger.info(f"Index {self.index_name} already exists, using it")
+                return self.pc.Index(self.index_name)
             logger.error(f"Error getting/creating index: {e}")
             raise
     
     def embed_text(self, text: str) -> List[float]:
         """
-        Generate embeddings for text using Anthropic API
-        Using text-embedding model for semantic understanding
+        Generate embeddings for text
+        Using hash-based embeddings (placeholder - can be replaced with HF embeddings)
         """
         try:
-            # Use Anthropic embeddings or fallback to OpenAI pattern
-            # This is a placeholder - you'd integrate with actual embedding API
-            # For now, using simple hash-based embeddings (not production)
-            
-            # In production, use:
-            # response = self.anthropic_client.embeddings.create(
-            #     model="text-embedding-large",
-            #     input=text
-            # )
-            # return response.data[0].embedding
+            # Placeholder: hash-based embeddings
+            # In production, you could use:
+            # from sentence_transformers import SentenceTransformer
+            # model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+            # return model.encode(text).tolist()
             
             # Placeholder: create deterministic embedding from text
             import hashlib
@@ -208,10 +223,14 @@ class PineconeVectorStore:
                     # Pinecone doesn't store full content in default setup
                 })
             
-            logger.info(
-                f"Retrieved {len(retrieved_chunks)} chunks "
-                f"(min similarity: {min([c['similarity'] for c in retrieved_chunks])})"
-            )
+            if retrieved_chunks:
+                min_similarity = min([c['similarity'] for c in retrieved_chunks])
+                logger.info(
+                    f"Retrieved {len(retrieved_chunks)} chunks "
+                    f"(min similarity: {min_similarity:.4f})"
+                )
+            else:
+                logger.warning("No chunks retrieved from vector store")
             
             return retrieved_chunks
             

@@ -6,8 +6,9 @@ requests==2.31.0
 pypdf==4.0.1
 
 # LLM & Embeddings
-anthropic==0.25.1
+huggingface_hub>=0.20.0
 tiktoken==0.5.2
+requests>=2.31.0
 
 # Vector Database
 pinecone-client==3.0.2
@@ -26,9 +27,9 @@ pydantic==2.5.2
 pyyaml==6.0.1
 
 # Testing (optional)
-pytest==7.4.3
-pytest-cov==4.1.0
-pytest-asyncio==0.22.1
+# pytest==7.4.3
+# pytest-cov==4.1.0
+# pytest-asyncio==0.22.1
 
 # Development (optional)
 black==23.12.1
