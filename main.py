@@ -183,7 +183,56 @@ class RAGCLISystem:
         print(f"Processing Time: {result['execution_time_seconds']:.2f}s")
         
         if result['error']:
-            print(f"⚠ Warning: {result['error']}")
+            print(f"\n⚠ WARNING")
+            print("="*70)
+            error_msg = result['error']
+            error_lower = error_msg.lower()
+            
+            if "authentication" in error_lower or "api token" in error_lower or "401" in error_lower or "invalid" in error_lower:
+                print("AUTHENTICATION ERROR DETECTED")
+                print("-" * 70)
+                print("Your Hugging Face API token is invalid or missing.")
+                print("\nTo fix this:")
+                print("1. Get your API token from: https://huggingface.co/settings/tokens")
+                print("2. Create a token with 'Read' access")
+                print("3. Add it to your .env file:")
+                print("   HF_API_TOKEN=hf_...")
+                print("4. Run health check: python health_check.py")
+                print("5. Restart the application")
+                print("-" * 70)
+            elif "loading" in error_lower or "503" in error_lower:
+                print("MODEL LOADING ERROR DETECTED")
+                print("-" * 70)
+                print("The Hugging Face model is currently loading.")
+                print("\nTo fix this:")
+                print("1. Wait 30-60 seconds for the model to warm up")
+                print("2. Try again")
+                print("3. This is normal on first request")
+                print("-" * 70)
+            elif "rate limit" in error_lower or "429" in error_lower:
+                print("RATE LIMIT ERROR DETECTED")
+                print("-" * 70)
+                print("You've exceeded the free tier rate limit.")
+                print("\nFree tier limits:")
+                print("- 30,000 requests/month")
+                print("- ~1,000 requests/day")
+                print("\nTo fix this:")
+                print("1. Wait a bit and try again")
+                print("2. Or upgrade your Hugging Face plan")
+                print("-" * 70)
+            elif "400" in error_lower or "bad request" in error_lower:
+                print("BAD REQUEST ERROR DETECTED")
+                print("-" * 70)
+                print("The request to Hugging Face API was invalid.")
+                print("This could be due to:")
+                print("- Invalid model name")
+                print("- Request format issues")
+                print("- Account limitations")
+                print("- Model not available")
+                print("-" * 70)
+            
+            print(f"\nError details: {error_msg}")
+            print("="*70)
         
         # Option to save result
         save = input("\nSave result to file? (y/n): ").lower()
@@ -310,7 +359,8 @@ def main():
         print(f"\n✗ Configuration Error: {e}")
         print("\nPlease:")
         print("1. Copy .env.example to .env")
-        print("2. Fill in your Anthropic and Pinecone credentials")
+        print("2. Fill in your Hugging Face and Pinecone credentials")
+        print("3. Get your HF_API_TOKEN from: https://huggingface.co/settings/tokens")
         sys.exit(1)
     except Exception as e:
         logger.error(f"Fatal error: {e}")

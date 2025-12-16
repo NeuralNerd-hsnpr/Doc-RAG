@@ -12,6 +12,8 @@ from datetime import datetime
 import hashlib
 import json
 import os
+import io
+import traceback
 
 from config import config
 
@@ -29,8 +31,8 @@ class DocumentProcessor:
     
     def __init__(self):
         self.session = requests.Session()
-        self.session.timeout = config.PDF_TIMEOUT
         self.document_cache = {}
+        logger.debug(f"DocumentProcessor initialized with timeout: {config.PDF_TIMEOUT}s")
     
     def process_document(self, url: str) -> Optional[Dict]:
         """
@@ -61,10 +63,13 @@ class DocumentProcessor:
             return None
         
         # Extract text
+        logger.info("Starting text extraction from PDF content")
         extracted = self.extract_text(pdf_content)
         if not extracted:
-            logger.error("Failed to extract text from PDF")
+            logger.error("Failed to extract text from PDF - extraction returned None")
             return None
+        
+        logger.info(f"Text extraction successful: {extracted['page_count']} pages, {len(extracted['text'])} characters")
         
         # Build result
         result = {
@@ -123,31 +128,56 @@ class DocumentProcessor:
         """Download PDF content from URL"""
         try:
             logger.info(f"Fetching PDF from: {url}")
+            logger.debug(f"Timeout set to: {config.PDF_TIMEOUT} seconds")
             
             response = self.session.get(
                 url,
                 timeout=config.PDF_TIMEOUT,
-                stream=True
+                stream=True,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
             )
             response.raise_for_status()
             
+            logger.debug(f"Response status: {response.status_code}")
+            logger.debug(f"Content-Type: {response.headers.get('content-type', 'Unknown')}")
+            
             # Check file size
             content_length = response.headers.get('content-length')
-            if content_length and int(content_length) > config.MAX_PDF_SIZE:
-                logger.error(f"PDF size exceeds limit: {content_length} bytes")
-                return None
+            if content_length:
+                content_length_int = int(content_length)
+                logger.info(f"Content-Length header: {content_length_int} bytes")
+                if content_length_int > config.MAX_PDF_SIZE:
+                    logger.error(f"PDF size exceeds limit: {content_length_int} bytes (max: {config.MAX_PDF_SIZE})")
+                    return None
             
             pdf_content = response.content
+            logger.info(f"Downloaded {len(pdf_content)} bytes")
             
             if len(pdf_content) > config.MAX_PDF_SIZE:
-                logger.error(f"Downloaded PDF exceeds size limit")
+                logger.error(f"Downloaded PDF exceeds size limit: {len(pdf_content)} bytes (max: {config.MAX_PDF_SIZE})")
                 return None
             
+            if len(pdf_content) < 100:
+                logger.warning(f"PDF content seems too small: {len(pdf_content)} bytes")
+            
             logger.info(f"PDF fetched successfully: {len(pdf_content)} bytes")
+            logger.debug(f"First 100 bytes (hex): {pdf_content[:100].hex()}")
+            logger.debug(f"PDF signature check: {pdf_content[:4] == b'%PDF'}")
+            
             return pdf_content
             
+        except requests.Timeout as e:
+            logger.error(f"Timeout while fetching PDF: {e}")
+            return None
         except requests.RequestException as e:
             logger.error(f"Error fetching PDF: {e}")
+            logger.debug(f"Exception details: {traceback.format_exc()}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching PDF: {e}")
+            logger.debug(f"Exception details: {traceback.format_exc()}")
             return None
     
     def extract_text(self, pdf_content: bytes) -> Optional[Dict]:
@@ -156,33 +186,92 @@ class DocumentProcessor:
         Preserves section structure for semantic chunking
         """
         try:
-            pdf_reader = pypdf.PdfReader(input_pdf_path=pdf_content)
+            logger.info(f"Starting PDF text extraction. Content size: {len(pdf_content)} bytes")
+            
+            if not pdf_content:
+                logger.error("PDF content is empty")
+                return None
+            
+            if pdf_content[:4] != b'%PDF':
+                logger.error(f"Invalid PDF signature. First 4 bytes: {pdf_content[:4]}")
+                return None
+            
+            logger.debug("Creating BytesIO stream from PDF content")
+            pdf_stream = io.BytesIO(pdf_content)
+            
+            logger.debug("Initializing PdfReader")
+            try:
+                pdf_reader = pypdf.PdfReader(pdf_stream)
+            except Exception as reader_error:
+                logger.error(f"Failed to initialize PdfReader: {reader_error}")
+                logger.debug(f"PdfReader error details: {traceback.format_exc()}")
+                return None
+            
+            logger.debug("Checking PDF metadata")
+            try:
+                if pdf_reader.metadata:
+                    logger.debug(f"PDF metadata: {pdf_reader.metadata}")
+                logger.debug(f"PDF is encrypted: {pdf_reader.is_encrypted}")
+                if pdf_reader.is_encrypted:
+                    logger.warning("PDF is encrypted, attempting to decrypt")
+                    try:
+                        pdf_reader.decrypt("")
+                        logger.info("PDF decrypted successfully (empty password)")
+                    except Exception as decrypt_error:
+                        logger.error(f"Failed to decrypt PDF: {decrypt_error}")
+                        return None
+            except Exception as meta_error:
+                logger.warning(f"Could not read PDF metadata: {meta_error}")
             
             page_count = len(pdf_reader.pages)
+            logger.info(f"PDF has {page_count} pages")
+            
             if page_count == 0:
                 logger.error("PDF has no pages")
                 return None
             
-            logger.info(f"PDF has {page_count} pages")
-            
             # Extract text page by page
             full_text = ""
             sections = []
+            pages_with_text = 0
+            pages_without_text = 0
             
+            logger.debug("Extracting text from pages...")
             for page_num, page in enumerate(pdf_reader.pages):
-                page_text = page.extract_text()
-                
-                # Preserve page structure
-                full_text += f"\n--- Page {page_num + 1} ---\n"
-                full_text += page_text
-                
-                # Try to identify sections (headings, large text)
-                if page_text.strip():
-                    sections.append({
-                        "page": page_num + 1,
-                        "content": page_text,
-                        "heading": self.extract_heading(page_text)
-                    })
+                try:
+                    logger.debug(f"Extracting text from page {page_num + 1}/{page_count}")
+                    page_text = page.extract_text()
+                    
+                    if page_text and page_text.strip():
+                        pages_with_text += 1
+                        text_length = len(page_text.strip())
+                        logger.debug(f"Page {page_num + 1}: Extracted {text_length} characters")
+                    else:
+                        pages_without_text += 1
+                        logger.warning(f"Page {page_num + 1}: No text extracted")
+                    
+                    # Preserve page structure
+                    full_text += f"\n--- Page {page_num + 1} ---\n"
+                    full_text += page_text if page_text else ""
+                    
+                    # Try to identify sections (headings, large text)
+                    if page_text and page_text.strip():
+                        sections.append({
+                            "page": page_num + 1,
+                            "content": page_text,
+                            "heading": self.extract_heading(page_text)
+                        })
+                except Exception as page_error:
+                    logger.error(f"Error extracting text from page {page_num + 1}: {page_error}")
+                    logger.debug(f"Page extraction error details: {traceback.format_exc()}")
+                    full_text += f"\n--- Page {page_num + 1} ---\n[Error extracting text from this page]"
+            
+            logger.info(f"Text extraction complete: {pages_with_text} pages with text, {pages_without_text} pages without text")
+            logger.info(f"Total extracted text length: {len(full_text)} characters")
+            
+            if not full_text.strip():
+                logger.error("No text extracted from PDF")
+                return None
             
             return {
                 "text": full_text,
@@ -190,8 +279,13 @@ class DocumentProcessor:
                 "sections": sections
             }
             
+        except pypdf.errors.PdfReadError as e:
+            logger.error(f"PDF read error: {e}")
+            logger.debug(f"PdfReadError details: {traceback.format_exc()}")
+            return None
         except Exception as e:
             logger.error(f"Error extracting PDF text: {e}")
+            logger.debug(f"Exception details: {traceback.format_exc()}")
             return None
     
     def extract_heading(self, page_text: str) -> str:
