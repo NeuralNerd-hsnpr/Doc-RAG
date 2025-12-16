@@ -3,18 +3,18 @@
 A complete, production-grade Retrieval-Augmented Generation (RAG) system for intelligent document Q&A with PDF ingestion, vector embeddings, and precise answer synthesis.
 
 **Key Features:**
-- 📄 **Dynamic Document Ingestion**: Load PDFs from URLs automatically
-- 🔀 **Intelligent Chunking**: Semantic, token-based, and hybrid strategies
-- 🗄️ **Vector Storage**: Pinecone integration for scalable similarity search
-- 🧠 **LLM-Powered Answers**: Claude API for precise, cited responses
-- 🔄 **LangGraph Workflow**: Structured RAG pipeline with routing, retrieval, synthesis
-- 💬 **Interactive CLI**: User-friendly question answering interface
-- 📊 **Citation Tracking**: All answers grounded in source documents
-- ⚡ **Production-Ready**: Error handling, logging, configuration management
+-  **Dynamic Document Ingestion**: Load PDFs from URLs automatically
+-  **Intelligent Chunking**: Semantic, token-based, and hybrid strategies
+-  **Vector Storage**: Pinecone integration for scalable similarity search
+-  **LLM-Powered Answers**: Claude API for precise, cited responses
+-  **LangGraph Workflow**: Structured RAG pipeline with routing, retrieval, synthesis
+-  **Interactive CLI**: User-friendly question answering interface
+-  **Citation Tracking**: All answers grounded in source documents
+-  **Production-Ready**: Error handling, logging, configuration management
 
 ---
 
-## 🚀 Quick Start (5 minutes)
+##  Quick Start 
 
 ### Prerequisites
 - Python 3.10+
@@ -61,7 +61,7 @@ Citations: [Section 1, Page 5], [Section 3, Page 12]
 
 ---
 
-## 📦 Installation Guide (Step by Step)
+##  Installation Guide (Step by Step)
 
 ### Step 1: Clone Repository
 ```bash
@@ -322,7 +322,7 @@ Retrieved Chunks → Claude LLM → Grounded Answer with Citations
 
 ---
 
-## 🧪 Testing
+##  Testing
 
 Run unit tests:
 ```bash
@@ -349,7 +349,7 @@ python -c "from src.vector_store import PineconeVectorStore; ps = PineconeVector
 
 ---
 
-## 🐛 Troubleshooting
+##  Troubleshooting
 
 ### "ModuleNotFoundError: No module named 'X'"
 ```bash
@@ -407,7 +407,7 @@ CHUNK_SIZE=500  # Default is 800
 
 ---
 
-## 📊 Performance Metrics
+##  Performance Metrics
 
 ### Ingestion Performance
 - PDF download: 1-5 seconds (depends on file size)
@@ -430,7 +430,7 @@ CHUNK_SIZE=500  # Default is 800
 
 ---
 
-## 🚀 Deployment Options
+##  Deployment Options
 
 ### Local Development
 ```bash
@@ -533,57 +533,3 @@ result = rag_workflow.process_query(
 #   "execution_time_seconds": 3.45
 # }
 ```
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
-
-### Development Guidelines
-- Follow PEP 8 style guide
-- Add tests for new features
-- Update documentation
-- Run `pytest` before submitting PR
-- Use type hints
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-## 🆘 Support
-
-- **Issues**: Open an issue on GitHub
-- **Documentation**: See docs/ directory
-- **Email**: support@example.com
-- **Discord**: [Join our server](https://discord.gg/example)
-
----
-
-## 🙏 Acknowledgments
-
-- Anthropic for Claude API
-- Pinecone for vector database
-- LangChain community for LangGraph
-- Contributors and users
-
----
-
-## 📚 Further Reading
-
-- [Anthropic Documentation](https://docs.anthropic.com/)
-- [Pinecone Docs](https://docs.pinecone.io/)
-- [LangGraph Guide](https://python.langchain.com/docs/langgraph)
-- [RAG Best Practices](https://arxiv.org/abs/2312.10997)
-
----
-
-**Made with ❤️ for the AI community**
