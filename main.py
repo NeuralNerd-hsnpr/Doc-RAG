@@ -14,12 +14,8 @@ from src.document_processor import document_processor
 from src.chunker import chunker
 from src.vector_store import vector_store
 from src.langgraph_workflow import rag_workflow
+from src.logger import request_logger
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL),
-    format=config.LOG_FORMAT
-)
 logger = logging.getLogger(__name__)
 
 
@@ -98,11 +94,16 @@ class RAGCLISystem:
         print("\n→ Generating embeddings and storing in Pinecone...")
         document_id = f"doc_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
+        import time
+        storage_start = time.time()
         success = vector_store.store_chunks(chunks, document_id)
+        storage_time = (time.time() - storage_start) * 1000
+        
         if not success:
             print("✗ Failed to store vectors")
             return False
         
+        request_logger.log_vector_storage(document_id, len(chunks), storage_time)
         print(f"✓ Vectors stored successfully")
         print(f"  Document ID: {document_id}")
         
