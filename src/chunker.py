@@ -78,83 +78,194 @@ class DocumentChunker:
         return chunks
     
     def semantic_chunking(self, document: Dict) -> List[Chunk]:
-        """
-        Chunk at semantic boundaries: sections, headings, paragraphs
-        Best for structured documents (reports, papers)
-        """
         chunks = []
         content = document["content"]
         
-        # Split by page breaks first
         pages = content.split("--- Page")
-        
         chunk_index = 0
         
         for page_num, page_content in enumerate(pages):
             if page_num > 0:
-                # Restore page marker
                 page_content = "--- Page" + page_content
             
-            # Extract page number
             page_match = re.search(r'--- Page (\d+)', page_content)
             current_page = int(page_match.group(1)) if page_match else page_num + 1
             
-            # Split by double newlines (paragraphs)
-            paragraphs = page_content.split('\n\n')
+            page_content_clean = re.sub(r'--- Page \d+ ---\s*', '', page_content).strip()
             
-            current_chunk = ""
+            sections = self._split_into_sections(page_content_clean)
             
-            for paragraph in paragraphs:
-                paragraph = paragraph.strip()
-                if not paragraph:
+            for section_text in sections:
+                if not section_text.strip():
                     continue
                 
-                # Check if adding this paragraph exceeds chunk size
-                test_content = current_chunk + "\n\n" + paragraph if current_chunk else paragraph
-                token_count = self.count_tokens(test_content)
+                section_token_count = self.count_tokens(section_text)
                 
-                if token_count > self.chunk_size and current_chunk:
-                    # Save current chunk
-                    if len(current_chunk.strip()) >= self.min_chunk_size:
+                if section_token_count <= self.chunk_size:
+                    if section_token_count >= self.min_chunk_size:
                         chunk = Chunk(
-                            content=current_chunk.strip(),
+                            content=section_text.strip(),
                             page_number=current_page,
-                            section=self.extract_section(current_chunk),
+                            section=self.extract_section(section_text),
                             chunk_index=chunk_index,
                             metadata={
                                 "strategy": "semantic",
-                                "word_count": len(current_chunk.split()),
-                                "token_count": self.count_tokens(current_chunk),
-                                "source": document.get("title", "Unknown")
+                                "word_count": len(section_text.split()),
+                                "token_count": section_token_count,
+                                "source": document.get("title", "Unknown"),
+                                "chunk_type": "section"
                             }
                         )
                         chunks.append(chunk)
                         chunk_index += 1
-                    
-                    # Start new chunk with current paragraph
-                    current_chunk = paragraph
                 else:
-                    # Add to current chunk
-                    current_chunk = test_content if current_chunk else paragraph
+                    sub_chunks = self._split_large_section(section_text, current_page, chunk_index, document)
+                    chunks.extend(sub_chunks)
+                    chunk_index += len(sub_chunks)
+        
+        logger.info(f"Created {len(chunks)} semantic chunks")
+        return chunks
+    
+    def _split_into_sections(self, text: str) -> List[str]:
+        sections = []
+        
+        heading_patterns = [
+            r'^[A-Z][A-Z\s]{3,80}$',
+            r'^\d+\.\s+[A-Z][^\n]{3,150}$',
+            r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,10}$',
+            r'^[A-Z][A-Z\s]+[?]$',
+            r'^[A-Z][a-z]+(?:\s+[a-z]+)*\s+[?]$',
+        ]
+        
+        question_patterns = [
+            r'is this',
+            r'will.*\?',
+            r'what.*\?',
+            r'how.*\?',
+            r'why.*\?',
+        ]
+        
+        current_section = ""
+        lines = text.split('\n')
+        
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            if not line_stripped:
+                if current_section:
+                    current_section += '\n'
+                continue
             
-            # Save remaining chunk
-            if current_chunk.strip() and len(current_chunk.strip()) >= self.min_chunk_size:
-                chunk = Chunk(
-                    content=current_chunk.strip(),
-                    page_number=current_page,
-                    section=self.extract_section(current_chunk),
-                    chunk_index=chunk_index,
-                    metadata={
-                        "strategy": "semantic",
-                        "word_count": len(current_chunk.split()),
-                        "token_count": self.count_tokens(current_chunk),
-                        "source": document.get("title", "Unknown")
-                    }
-                )
-                chunks.append(chunk)
-                chunk_index += 1
+            is_heading = False
+            
+            for pattern in heading_patterns:
+                if re.match(pattern, line_stripped):
+                    is_heading = True
+                    break
+            
+            if not is_heading:
+                for q_pattern in question_patterns:
+                    if re.search(q_pattern, line_stripped.lower()):
+                        if len(line_stripped) < 100:
+                            is_heading = True
+                            break
+            
+            if is_heading and current_section.strip():
+                sections.append(current_section.strip())
+                current_section = line + '\n'
+            else:
+                current_section += line + '\n'
+        
+        if current_section.strip():
+            sections.append(current_section.strip())
+        
+        if not sections:
+            sections = [text]
+        
+        logger.debug(f"[CHUNKING] Split into {len(sections)} sections")
+        
+        return sections
+    
+    def _split_large_section(self, text: str, page: int, start_index: int, document: Dict) -> List[Chunk]:
+        chunks = []
+        paragraphs = text.split('\n\n')
+        current_chunk = ""
+        chunk_idx = start_index
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            
+            test_content = current_chunk + "\n\n" + para if current_chunk else para
+            token_count = self.count_tokens(test_content)
+            
+            if token_count > self.chunk_size and current_chunk:
+                if self.count_tokens(current_chunk) >= self.min_chunk_size:
+                    chunk_content = current_chunk.strip()
+                    
+                    if len(chunks) > 0:
+                        prev_chunk = chunks[-1]
+                        overlap_text = self._get_overlap_text(prev_chunk.content, chunk_content)
+                        if overlap_text:
+                            chunk_content = overlap_text + "\n\n" + chunk_content
+                    
+                    chunk = Chunk(
+                        content=chunk_content,
+                        page_number=page,
+                        section=self.extract_section(current_chunk),
+                        chunk_index=chunk_idx,
+                        metadata={
+                            "strategy": "semantic",
+                            "word_count": len(chunk_content.split()),
+                            "token_count": self.count_tokens(chunk_content),
+                            "source": document.get("title", "Unknown"),
+                            "chunk_type": "paragraph"
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_idx += 1
+                
+                overlap_text = self._get_overlap_text(current_chunk, para)
+                current_chunk = overlap_text + "\n\n" + para if overlap_text else para
+            else:
+                current_chunk = test_content
+        
+        if current_chunk.strip() and self.count_tokens(current_chunk) >= self.min_chunk_size:
+            chunk_content = current_chunk.strip()
+            
+            if len(chunks) > 0:
+                prev_chunk = chunks[-1]
+                overlap_text = self._get_overlap_text(prev_chunk.content, chunk_content)
+                if overlap_text:
+                    chunk_content = overlap_text + "\n\n" + chunk_content
+            
+            chunk = Chunk(
+                content=chunk_content,
+                page_number=page,
+                section=self.extract_section(current_chunk),
+                chunk_index=chunk_idx,
+                metadata={
+                    "strategy": "semantic",
+                    "word_count": len(chunk_content.split()),
+                    "token_count": self.count_tokens(chunk_content),
+                    "source": document.get("title", "Unknown"),
+                    "chunk_type": "paragraph"
+                }
+            )
+            chunks.append(chunk)
         
         return chunks
+    
+    def _get_overlap_text(self, prev_text: str, next_text: str) -> str:
+        prev_sentences = prev_text.split('. ')
+        if len(prev_sentences) < 2:
+            return ""
+        
+        overlap_sentences = prev_sentences[-2:]
+        overlap = '. '.join(overlap_sentences)
+        if not overlap.endswith('.'):
+            overlap += '.'
+        return overlap
     
     def token_based_chunking(self, document: Dict) -> List[Chunk]:
         """
@@ -257,14 +368,21 @@ class DocumentChunker:
             return len(text.split())
     
     def extract_section(self, text: str) -> str:
-        """Extract likely section heading from text"""
         lines = text.split('\n')
-        for line in lines:
+        for line in lines[:5]:
             line = line.strip()
-            if len(line) > 3 and len(line) < 150 and line.isupper():
-                return line
-            elif len(line) > 3 and len(line) < 150:
-                return line
+            if not line:
+                continue
+            
+            if len(line) > 3 and len(line) < 150:
+                if line.isupper() or (line[0].isupper() and len(line.split()) <= 10):
+                    if not line.startswith('---'):
+                        return line
+        
+        if len(text) > 0:
+            first_words = ' '.join(text.split()[:5])
+            return first_words if len(first_words) < 100 else first_words[:97] + "..."
+        
         return "Untitled Section"
     
     def extract_page_number(self, text: str) -> int:

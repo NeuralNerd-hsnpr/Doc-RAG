@@ -10,6 +10,7 @@ from pinecone import Pinecone, ServerlessSpec
 from pinecone.exceptions import PineconeApiException
 from config import config
 from src.chunker import Chunk
+from src.embeddings import embedding_generator
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +29,10 @@ class PineconeVectorStore:
         try:
             self.pc = Pinecone(api_key=config.PINECONE_API_KEY)
             self.index_name = config.PINECONE_INDEX_NAME
-            self.dimension = config.PINECONE_DIMENSION
+            self.dimension = embedding_generator.dimension
             
             logger.info(f"Pinecone client initialized")
+            logger.info(f"Expected embedding dimension: {self.dimension}")
             
             # Get or create index
             self.index = self.get_or_create_index()
@@ -58,8 +60,39 @@ class PineconeVectorStore:
                         index_names = list(existing_indexes) if isinstance(existing_indexes, (list, tuple)) else []
             
             if self.index_name in index_names:
-                logger.info(f"Using existing index: {self.index_name}")
-                return self.pc.Index(self.index_name)
+                logger.info(f"Found existing index: {self.index_name}")
+                index = self.pc.Index(self.index_name)
+                
+                try:
+                    index_info = self.pc.describe_index(self.index_name)
+                    existing_dimension = index_info.dimension
+                    
+                    if existing_dimension != self.dimension:
+                        error_msg = (
+                            f"\n{'='*70}\n"
+                            f"DIMENSION MISMATCH ERROR\n"
+                            f"{'='*70}\n"
+                            f"Existing index '{self.index_name}' has dimension: {existing_dimension}\n"
+                            f"Current embedding model produces dimension: {self.dimension}\n"
+                            f"\nTo fix this, choose one:\n"
+                            f"1. Delete the existing index:\n"
+                            f"   python scripts/fix_index_dimension.py --delete\n"
+                            f"2. Use a different index name (add to .env):\n"
+                            f"   PINECONE_INDEX_NAME=document-rag-index-384\n"
+                            f"3. Change embedding model to match (1536 dim):\n"
+                            f"   EMBEDDING_MODEL=intfloat/e5-large-v2\n"
+                            f"{'='*70}\n"
+                        )
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
+                    
+                    logger.info(f"Using existing index: {self.index_name} (dimension: {existing_dimension} ✓)")
+                except Exception as e:
+                    if "dimension" in str(e).lower() or "mismatch" in str(e).lower():
+                        raise
+                    logger.warning(f"Could not verify index dimension: {e}")
+                
+                return index
             
             logger.info(f"Creating new index: {self.index_name}")
             try:
@@ -91,33 +124,11 @@ class PineconeVectorStore:
             raise
     
     def embed_text(self, text: str) -> List[float]:
-        """
-        Generate embeddings for text
-        Using hash-based embeddings (placeholder - can be replaced with HF embeddings)
-        """
         try:
-            # Placeholder: hash-based embeddings
-            # In production, you could use:
-            # from sentence_transformers import SentenceTransformer
-            # model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-            # return model.encode(text).tolist()
-            
-            # Placeholder: create deterministic embedding from text
-            import hashlib
-            import numpy as np
-            
-            # Create seed from text
-            hash_obj = hashlib.sha256(text.encode())
-            seed = int(hash_obj.hexdigest(), 16) % (2**32)
-            
-            # Generate deterministic random embedding
-            np.random.seed(seed)
-            embedding = np.random.randn(self.dimension).astype('float32')
-            # Normalize
-            embedding = embedding / np.linalg.norm(embedding)
-            
-            return embedding.tolist()
-            
+            logger.debug(f"Generating embedding for text (length: {len(text)} chars)")
+            embedding = embedding_generator.embed_text(text)
+            logger.debug(f"Generated embedding (dimension: {len(embedding)})")
+            return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             raise
@@ -139,7 +150,7 @@ class PineconeVectorStore:
             vectors_to_upsert = []
             
             for i, chunk in enumerate(chunks):
-                # Generate embedding
+                logger.debug(f"Processing chunk {i+1}/{len(chunks)}: page {chunk.page_number}, section {chunk.section}")
                 embedding = self.embed_text(chunk.content)
                 
                 # Create vector ID
@@ -151,8 +162,11 @@ class PineconeVectorStore:
                     "chunk_index": chunk.chunk_index,
                     "page_number": chunk.page_number,
                     "section": chunk.section,
-                    "content_preview": chunk.content[:200],  # Preview for debugging
-                    **chunk.metadata
+                    "content": chunk.content,
+                    "content_preview": chunk.content[:200],
+                    "token_count": chunk.metadata.get("token_count", 0),
+                    "word_count": chunk.metadata.get("word_count", 0),
+                    "source": chunk.metadata.get("source", "Unknown")
                 }
                 
                 # Add to batch
@@ -182,61 +196,162 @@ class PineconeVectorStore:
         document_id: Optional[str] = None,
         top_k: Optional[int] = None
     ) -> List[Dict]:
-        """
-        Retrieve relevant chunks for a query
-        
-        Args:
-            query: Search query
-            document_id: Optional filter by document
-            top_k: Number of results (default from config)
-            
-        Returns:
-            List of relevant chunks with scores
-        """
         try:
             top_k = top_k or config.RETRIEVAL_TOP_K
             
-            # Generate query embedding
-            query_embedding = self.embed_text(query)
+            query_lower = query.lower()
+            is_general = any(word in query_lower for word in [
+                "topic", "theme", "subject", "about", "main", "overview", 
+                "summary", "what is", "discuss", "cover", "include", "all"
+            ])
             
-            # Build filter if document_id specified
+            if is_general:
+                expanded_top_k = int(top_k * 4)
+                logger.info(f"[RETRIEVAL] General query detected, using expanded_top_k={expanded_top_k}")
+            else:
+                expanded_top_k = int(top_k * 2.5)
+            
+            logger.info(f"[RETRIEVAL] Starting retrieval for query: '{query[:100]}...'")
+            logger.info(f"[RETRIEVAL] top_k={top_k}, expanded_top_k={expanded_top_k}, threshold={config.SIMILARITY_THRESHOLD}")
+            
+            from src.query_processor import query_processor
+            processed_query = query_processor.preprocess_query(query)
+            
+            logger.debug(f"[RETRIEVAL] Processed query: '{processed_query}'")
+            
+            query_embedding = self.embed_text(processed_query)
+            logger.debug(f"[RETRIEVAL] Query embedding generated (dim={len(query_embedding)})")
+            
             filter_dict = None
             if document_id:
                 filter_dict = {"document_id": {"$eq": document_id}}
+                logger.debug(f"[RETRIEVAL] Filtering by document_id: {document_id}")
             
-            # Query the index
+            logger.debug(f"[RETRIEVAL] Querying Pinecone with top_k={expanded_top_k}")
             results = self.index.query(
                 vector=query_embedding,
-                top_k=top_k,
+                top_k=expanded_top_k,
                 include_metadata=True,
                 filter=filter_dict
             )
             
-            # Format results
-            retrieved_chunks = []
-            for match in results["matches"]:
-                retrieved_chunks.append({
+            logger.info(f"[RETRIEVAL] Pinecone returned {len(results.get('matches', []))} matches")
+            
+            all_matches = []
+            for i, match in enumerate(results.get("matches", [])):
+                similarity = match.get("score", 0.0)
+                metadata = match.get("metadata", {})
+                content = metadata.get("content", metadata.get("content_preview", ""))
+                
+                logger.debug(
+                    f"[RETRIEVAL] Match {i+1}: similarity={similarity:.4f}, "
+                    f"page={metadata.get('page_number', 'N/A')}, "
+                    f"content_len={len(content)}"
+                )
+                
+                chunk_data = {
                     "id": match["id"],
-                    "similarity": match["score"],
-                    "metadata": match["metadata"],
-                    # Note: we'd need to fetch content separately
-                    # Pinecone doesn't store full content in default setup
-                })
+                    "similarity": similarity,
+                    "metadata": metadata,
+                    "content": content,
+                    "page_number": metadata.get("page_number", 0),
+                    "section": metadata.get("section", "Unknown")
+                }
+                all_matches.append(chunk_data)
+            
+            logger.info(f"[RETRIEVAL] Total matches before threshold filter: {len(all_matches)}")
+            
+            if is_general:
+                adaptive_threshold = max(config.SIMILARITY_THRESHOLD * 0.7, 0.15)
+                logger.info(f"[RETRIEVAL] General query - using adaptive threshold: {adaptive_threshold}")
+            else:
+                adaptive_threshold = config.SIMILARITY_THRESHOLD
+            
+            threshold_filtered = [c for c in all_matches if c['similarity'] >= adaptive_threshold]
+            logger.info(f"[RETRIEVAL] Matches after threshold ({adaptive_threshold:.3f}): {len(threshold_filtered)}")
+            
+            if not threshold_filtered and all_matches:
+                highest_sim = max(c['similarity'] for c in all_matches)
+                logger.warning(
+                    f"[RETRIEVAL] All matches below threshold. Highest similarity: {highest_sim:.4f}. "
+                    f"Using top {min(top_k * 2, len(all_matches))} matches anyway for better coverage."
+                )
+                threshold_filtered = sorted(all_matches, key=lambda x: x['similarity'], reverse=True)[:top_k * 2]
+            
+            retrieved_chunks = self._rerank_chunks(query, threshold_filtered)
+            retrieved_chunks = retrieved_chunks[:top_k]
             
             if retrieved_chunks:
-                min_similarity = min([c['similarity'] for c in retrieved_chunks])
+                similarities = [c['similarity'] for c in retrieved_chunks]
+                min_sim = min(similarities)
+                max_sim = max(similarities)
+                avg_sim = sum(similarities) / len(similarities)
+                
                 logger.info(
-                    f"Retrieved {len(retrieved_chunks)} chunks "
-                    f"(min similarity: {min_similarity:.4f})"
+                    f"[RETRIEVAL] Final result: {len(retrieved_chunks)} chunks "
+                    f"(similarity: min={min_sim:.3f}, max={max_sim:.3f}, avg={avg_sim:.3f})"
                 )
+                
+                for i, chunk in enumerate(retrieved_chunks[:3]):
+                    logger.debug(
+                        f"[RETRIEVAL] Top chunk {i+1}: page={chunk['page_number']}, "
+                        f"sim={chunk['similarity']:.3f}, "
+                        f"preview={chunk['content'][:100]}..."
+                    )
             else:
-                logger.warning("No chunks retrieved from vector store")
+                logger.warning("[RETRIEVAL] No chunks retrieved after filtering")
+                if all_matches:
+                    logger.info(f"[RETRIEVAL] Available matches (all below threshold): {len(all_matches)}")
+                    logger.info(f"[RETRIEVAL] Highest similarity: {max(c['similarity'] for c in all_matches):.4f}")
             
             return retrieved_chunks
             
         except Exception as e:
-            logger.error(f"Error retrieving chunks: {e}")
+            logger.error(f"[RETRIEVAL] Error retrieving chunks: {e}", exc_info=True)
             return []
+    
+    def _rerank_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        if not chunks:
+            return chunks
+        
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        
+        query_phrases = []
+        words_list = query_lower.split()
+        for i in range(len(words_list) - 1):
+            query_phrases.append(f"{words_list[i]} {words_list[i+1]}")
+        
+        logger.debug(f"[RERANK] Reranking {len(chunks)} chunks with query: '{query}'")
+        
+        for chunk in chunks:
+            content = chunk.get("content", "").lower()
+            content_words = set(content.split())
+            
+            word_overlap = len(query_words.intersection(content_words))
+            total_query_words = len(query_words)
+            
+            phrase_matches = sum(1 for phrase in query_phrases if phrase in content)
+            
+            if total_query_words > 0:
+                keyword_score = word_overlap / total_query_words
+                phrase_bonus = min(phrase_matches * 0.1, 0.2)
+                
+                semantic_score = chunk.get("similarity", 0.0)
+                
+                combined_score = (semantic_score * 0.6) + (keyword_score * 0.3) + phrase_bonus
+                chunk["similarity"] = combined_score
+                chunk["_original_similarity"] = semantic_score
+                chunk["_keyword_score"] = keyword_score
+        
+        chunks.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+        
+        logger.debug(
+            f"[RERANK] Top 3 after reranking: "
+            f"{[(c['similarity'], c.get('_original_similarity', 0)) for c in chunks[:3]]}"
+        )
+        
+        return chunks
     
     def get_chunk_content(self, chunk_id: str) -> Optional[str]:
         """
