@@ -23,7 +23,7 @@ class Config:
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
     PINECONE_ENVIRONMENT: str = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "document-rag-index")
-    PINECONE_DIMENSION: int = 1536  # Embedding dimension (standard for most embedding models)
+    PINECONE_DIMENSION: int = 384
     
     # Document Processing
     CHUNK_SIZE: int = 800  # tokens per chunk
@@ -34,16 +34,18 @@ class Config:
     CHUNKING_STRATEGY: str = "semantic"  # "semantic", "token-based", or "hybrid"
     
     # Embedding
-    EMBEDDING_MODEL: str = "text-embedding-3-large"  # For API-based embeddings
-    EMBEDDING_DIMENSION: int = 1536
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    EMBEDDING_DIMENSION: int = 384
     
     # Retrieval
-    RETRIEVAL_TOP_K: int = 5  # number of chunks to retrieve
-    SIMILARITY_THRESHOLD: float = 0.75  # minimum cosine similarity
+    RETRIEVAL_TOP_K: int = 10  # number of chunks to retrieve
+    SIMILARITY_THRESHOLD: float = 0.3  # minimum cosine similarity (lowered for better recall)
+    USE_QUERY_EXPANSION: bool = True  # expand queries for better matching
     
     # LLM Synthesis
-    MAX_TOKENS_RESPONSE: int = 2000
-    TEMPERATURE: float = 0.2  # Lower for factual answers
+    MAX_TOKENS_RESPONSE: int = 600  # Reduced to prevent repetition loops
+    TEMPERATURE: float = 0.4  # Higher to break deterministic loops
+    REPETITION_PENALTY: float = 1.15  # Penalty to prevent repetition loops
     
     # File Management
     DATA_DIR: str = "./data"

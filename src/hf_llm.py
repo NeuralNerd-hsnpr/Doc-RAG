@@ -5,7 +5,7 @@ Uses HF Inference API for text generation with comprehensive logging
 
 import logging
 import traceback
-from typing import Optional
+from typing import Optional, List
 import os
 from dotenv import load_dotenv
 
@@ -122,7 +122,9 @@ class HuggingFaceLLM:
         max_tokens: int = 500,
         temperature: float = 0.7,
         system_prompt: Optional[str] = None,
-        stream: bool = False
+        stream: bool = False,
+        repetition_penalty: float = 1.1,
+        stop_sequences: Optional[List[str]] = None
     ) -> str:
         """
         Generate text using HF InferenceClient chat_completion API
@@ -155,7 +157,10 @@ class HuggingFaceLLM:
         logger.debug(f"User prompt preview: {prompt[:200]}...")
         
         try:
-            return self._generate_with_client(prompt, max_tokens, temperature, system_prompt, stream)
+            return self._generate_with_client(
+                prompt, max_tokens, temperature, system_prompt, stream,
+                repetition_penalty, stop_sequences
+            )
         except Exception as e:
             logger.error("=" * 70)
             logger.error("LLM Generation Failed")
@@ -171,7 +176,9 @@ class HuggingFaceLLM:
         max_tokens: int,
         temperature: float,
         system_prompt: Optional[str],
-        stream: bool
+        stream: bool,
+        repetition_penalty: float = 1.1,
+        stop_sequences: Optional[List[str]] = None
     ) -> str:
         """
         Generate using HuggingFace InferenceClient with chat_completion
@@ -203,22 +210,50 @@ class HuggingFaceLLM:
                 "(valid range: 0.1-2.0)"
             )
         
+        default_stop = ["\n\n\n", "---", "==="]
+        final_stop = stop_sequences if stop_sequences else default_stop
+        
         logger.info("Calling InferenceClient.chat_completion()...")
-        logger.debug(f"Request parameters: max_tokens={max_tokens_clamped}, "
-                    f"temperature={temperature_clamped}, stream={stream}")
+        logger.debug(
+            f"Request parameters: max_tokens={max_tokens_clamped}, "
+            f"temperature={temperature_clamped}, "
+            f"repetition_penalty={repetition_penalty}, "
+            f"stop_sequences={final_stop}, "
+            f"stream={stream}"
+        )
         
         try:
             if stream:
                 logger.info("Using streaming mode")
-                return self._generate_streaming(messages, max_tokens_clamped, temperature_clamped)
+                return self._generate_streaming(
+                    messages, max_tokens_clamped, temperature_clamped,
+                    repetition_penalty, final_stop
+                )
             else:
                 logger.info("Using non-streaming mode")
-                response = self.client.chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens_clamped,
-                    temperature=temperature_clamped,
-                    stream=False
-                )
+                
+                generation_params = {
+                    "messages": messages,
+                    "max_tokens": max_tokens_clamped,
+                    "temperature": temperature_clamped,
+                    "stream": False
+                }
+                
+                if final_stop:
+                    try:
+                        generation_params["stop"] = final_stop
+                    except Exception as e:
+                        logger.debug(f"stop_sequences not supported: {e}")
+                
+                try:
+                    response = self.client.chat_completion(**generation_params)
+                except TypeError as e:
+                    if "repetition_penalty" in str(e):
+                        logger.warning("repetition_penalty not supported by InferenceClient API - using alternative methods")
+                        generation_params.pop("repetition_penalty", None)
+                        response = self.client.chat_completion(**generation_params)
+                    else:
+                        raise
                 
                 logger.debug("Received response from InferenceClient")
                 logger.debug(f"Response type: {type(response)}")
@@ -340,18 +375,36 @@ class HuggingFaceLLM:
         self,
         messages: list,
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        repetition_penalty: float = 1.1,
+        stop_sequences: Optional[List[str]] = None
     ) -> str:
         """Generate with streaming support"""
         logger.info("Starting streaming generation...")
         
         try:
-            response = self.client.chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True
-            )
+            params = {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True
+            }
+            
+            if stop_sequences:
+                try:
+                    params["stop"] = stop_sequences
+                except Exception as e:
+                    logger.debug(f"stop_sequences not supported in streaming: {e}")
+            
+            try:
+                response = self.client.chat_completion(**params)
+            except TypeError as e:
+                if "repetition_penalty" in str(e):
+                    logger.warning("repetition_penalty not supported in streaming - using alternative methods")
+                    params.pop("repetition_penalty", None)
+                    response = self.client.chat_completion(**params)
+                else:
+                    raise
             
             logger.debug("Streaming response started")
             generated_text = ""
